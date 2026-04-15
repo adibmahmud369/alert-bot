@@ -24,8 +24,7 @@ def _user(uid):
         data[uid] = {
             "enabled": True,
             "alerts": [],
-            "next_id": 1,
-            "messages": []   # 🔥 for auto delete
+            "next_id": 1
         }
     return data[uid]
 
@@ -73,20 +72,12 @@ def set_enabled(uid, val):
     _save()
 
 
-# ===== MESSAGE TRACK =====
-
-def save_message_id(uid, mid):
+def update_last_alerted(uid, aid, t):
     u = _user(uid)
-    u["messages"].append(mid)
-    _save()
-
-
-def get_message_ids(uid):
-    return _user(uid).get("messages", [])
-
-
-def clear_message_ids(uid):
-    _user(uid)["messages"] = []
+    for a in u["alerts"]:
+        if a["id"] == aid:
+            a["last_alerted"] = t
+            break
     _save()
 
 

@@ -1,15 +1,11 @@
-"""
-Price Monitor — ব্যাকগ্রাউন্ডে চলে, প্রতি CHECK_INTERVAL সেকেন্ডে সব অ্যালার্ট চেক করে
-"""
-
 import asyncio
-import logging
 import time
-
+import logging
 from telegram import Bot
-from config import CHECK_INTERVAL
+
 import storage
 import price_fetcher
+from config import CHECK_INTERVAL
 
 logger = logging.getLogger(__name__)
 
@@ -19,62 +15,64 @@ class PriceMonitor:
         self.bot = bot
 
     async def run(self):
-        logger.info("📡 Price monitor চালু হয়েছে।")
+        logger.info("Monitor started")
         while True:
             try:
-                await self._check_all()
+                await self.check()
             except Exception as e:
-                logger.error(f"Monitor error: {e}")
+                logger.error(e)
+
             await asyncio.sleep(CHECK_INTERVAL)
 
-    async def _check_all(self):
+    async def check(self):
         users = storage.get_all_users()
         if not users:
             return
 
         needed = set()
-        for uid in users:
-            if storage.is_enabled(uid):
-                for a in storage.get_alerts(uid):
+
+        for u in users:
+            if storage.is_enabled(u):
+                for a in storage.get_alerts(u):
                     needed.add(a["asset"])
 
         if not needed:
             return
 
-        prices = {asset: price_fetcher.get_price(asset) for asset in needed}
+        prices = {a: price_fetcher.get_price(a) for a in needed}
         now = time.time()
 
-        for uid in users:
-            if not storage.is_enabled(uid):
+        for u in users:
+            if not storage.is_enabled(u):
                 continue
 
-            for alert in storage.get_alerts(uid):
-                current = prices.get(alert["asset"])
-                if current is None:
+            for a in storage.get_alerts(u):
+                price = prices.get(a["asset"])
+                if price is None:
                     continue
 
                 hit = (
-                    (alert["direction"] == "above" and current >= alert["price"]) or
-                    (alert["direction"] == "below" and current <= alert["price"])
+                    (a["direction"] == "above" and price >= a["price"]) or
+                    (a["direction"] == "below" and price <= a["price"])
                 )
 
-                if not hit:
-                    continue
+                if hit:
+                    # 🔥 repeat alert system (every 10 sec)
+                    if now - a.get("last_alerted", 0) < 10:
+                        continue
 
-                if now - alert.get("last_alerted", 0) < 10:
-                    continue
+                    await self.send(u, a, price)
+                    storage.update_last_alerted(u, a["id"], now)
 
-                await self._fire(uid, alert, current)
-                storage.update_last_alerted(uid, alert["id"], now)
-
-    async def _fire(self, user_id: str, alert: dict, current: float):
+    async def send(self, uid, alert, price):
         arrow = "🔺" if alert["direction"] == "above" else "🔻"
 
         msg = (
-            f"{arrow} ALERT TRIGGERED\n"
-            f"Asset: {alert['asset']}\n"
+            f"{arrow} ALERT\n"
+            f"{alert['asset']}\n"
             f"Target: {alert['price']}\n"
-            f"Current: {current}\n"
+            f"Current: {price}\n"
+            f"Note: {alert.get('note','')}"
         )
 
-        await self.bot.send_message(chat_id=int(user_id), text=msg)
+        await self.bot.send_message(chat_id=int(uid), text=msg)
