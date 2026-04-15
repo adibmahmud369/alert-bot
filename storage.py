@@ -1,91 +1,93 @@
-"""
-Storage — সব অ্যালার্ট JSON ফাইলে সেভ করে রাখে
-"""
-
 import json
 import os
 from threading import Lock
 
-STORAGE_FILE = "alerts_data.json"
-_lock = Lock()
-_data: dict = {}
+FILE = "alerts_data.json"
+lock = Lock()
+data = {}
 
 
 def _load():
-    global _data
-    if os.path.exists(STORAGE_FILE):
-        with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-            _data = json.load(f)
+    global data
+    if os.path.exists(FILE):
+        with open(FILE, "r") as f:
+            data = json.load(f)
 
 
 def _save():
-    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-        json.dump(_data, f, indent=2, ensure_ascii=False)
+    with open(FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 
-def _get_user(user_id: str) -> dict:
-    if user_id not in _data:
-        _data[user_id] = {"enabled": True, "alerts": [], "next_id": 1}
-    return _data[user_id]
+def _user(uid):
+    if uid not in data:
+        data[uid] = {
+            "enabled": True,
+            "alerts": [],
+            "next_id": 1,
+            "messages": []   # 🔥 for auto delete
+        }
+    return data[uid]
 
 
-def add_alert(user_id: str, asset: str, price: float, direction: str, note: str = "") -> int:
-    with _lock:
-        user = _get_user(user_id)
-        alert_id = user["next_id"]
-        user["alerts"].append({
-            "id": alert_id,
+def add_alert(uid, asset, price, direction, note=""):
+    with lock:
+        u = _user(uid)
+        aid = u["next_id"]
+
+        u["alerts"].append({
+            "id": aid,
             "asset": asset,
             "price": price,
-            "direction": direction,   # "above" বা "below"
-            "note": note,             # ইউজারের নিজের নোট
+            "direction": direction,
+            "note": note,
             "last_alerted": 0
         })
-        user["next_id"] += 1
+
+        u["next_id"] += 1
         _save()
-        return alert_id
+        return aid
 
 
-def remove_alert(user_id: str, alert_id: int) -> bool:
-    with _lock:
-        user = _get_user(user_id)
-        before = len(user["alerts"])
-        user["alerts"] = [a for a in user["alerts"] if a["id"] != alert_id]
-        changed = len(user["alerts"]) < before
-        if changed:
-            _save()
-        return changed
-
-
-def get_alerts(user_id: str) -> list:
-    with _lock:
-        return list(_get_user(user_id)["alerts"])
-
-
-def get_all_users() -> list:
-    with _lock:
-        return list(_data.keys())
-
-
-def is_enabled(user_id: str) -> bool:
-    with _lock:
-        return _get_user(user_id).get("enabled", True)
-
-
-def set_enabled(user_id: str, value: bool):
-    with _lock:
-        _get_user(user_id)["enabled"] = value
+def remove_alert(uid, aid):
+    with lock:
+        u = _user(uid)
+        u["alerts"] = [a for a in u["alerts"] if a["id"] != aid]
         _save()
 
 
-def update_last_alerted(user_id: str, alert_id: int, timestamp: float):
-    with _lock:
-        user = _get_user(user_id)
-        for a in user["alerts"]:
-            if a["id"] == alert_id:
-                a["last_alerted"] = timestamp
-                break
-        _save()
+def get_alerts(uid):
+    return _user(uid)["alerts"]
+
+
+def get_all_users():
+    return list(data.keys())
+
+
+def is_enabled(uid):
+    return _user(uid)["enabled"]
+
+
+def set_enabled(uid, val):
+    _user(uid)["enabled"] = val
+    _save()
+
+
+# ===== MESSAGE TRACK =====
+
+def save_message_id(uid, mid):
+    u = _user(uid)
+    u["messages"].append(mid)
+    _save()
+
+
+def get_message_ids(uid):
+    return _user(uid).get("messages", [])
+
+
+def clear_message_ids(uid):
+    _user(uid)["messages"] = []
+    _save()
 
 
 _load()
