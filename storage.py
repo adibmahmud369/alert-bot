@@ -25,31 +25,22 @@ def _save():
 
 def _get_user(user_id: str) -> dict:
     if user_id not in _data:
-        _data[user_id] = {
-            "enabled": True,
-            "alerts": [],
-            "next_id": 1,
-            "messages": []   # 🔥 NEW: bot message tracking
-        }
+        _data[user_id] = {"enabled": True, "alerts": [], "next_id": 1}
     return _data[user_id]
 
-
-# ================= ALERT SYSTEM =================
 
 def add_alert(user_id: str, asset: str, price: float, direction: str, note: str = "") -> int:
     with _lock:
         user = _get_user(user_id)
         alert_id = user["next_id"]
-
         user["alerts"].append({
             "id": alert_id,
             "asset": asset,
             "price": price,
-            "direction": direction,
-            "note": note,
+            "direction": direction,   # "above" বা "below"
+            "note": note,             # ইউজারের নিজের নোট
             "last_alerted": 0
         })
-
         user["next_id"] += 1
         _save()
         return alert_id
@@ -94,27 +85,6 @@ def update_last_alerted(user_id: str, alert_id: int, timestamp: float):
             if a["id"] == alert_id:
                 a["last_alerted"] = timestamp
                 break
-        _save()
-
-
-# ================= NEW: MESSAGE SYSTEM =================
-
-def save_message_id(user_id: str, message_id: int):
-    with _lock:
-        user = _get_user(user_id)
-        user["messages"].append(message_id)
-        _save()
-
-
-def get_message_ids(user_id: str) -> list:
-    with _lock:
-        return list(_get_user(user_id).get("messages", []))
-
-
-def clear_message_ids(user_id: str):
-    with _lock:
-        user = _get_user(user_id)
-        user["messages"] = []
         _save()
 
 

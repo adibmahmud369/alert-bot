@@ -4,9 +4,10 @@ Price Monitor — ব্যাকগ্রাউন্ডে চলে, প্�
 
 import asyncio
 import logging
+import time
 
 from telegram import Bot
-from config import CHECK_INTERVAL
+from config import CHECK_INTERVAL, ALERT_REPEAT_INTERVAL
 import storage
 import price_fetcher
 
@@ -31,7 +32,7 @@ class PriceMonitor:
         if not users:
             return
 
-        # needed assets collect
+        # কোন কোন অ্যাসেটের প্রাইস লাগবে বের করো
         needed = set()
         for uid in users:
             if storage.is_enabled(uid):
@@ -41,17 +42,13 @@ class PriceMonitor:
         if not needed:
             return
 
-        # fetch prices once
-        prices = {
-            asset: price_fetcher.get_price(asset)
-            for asset in needed
-        }
+        # একবারে সব প্রাইস ফেচ করো
+        prices = {asset: price_fetcher.get_price(asset) for asset in needed}
+        now = time.time()
 
-        # loop users
         for uid in users:
             if not storage.is_enabled(uid):
                 continue
-
             for alert in storage.get_alerts(uid):
                 current = prices.get(alert["asset"])
                 if current is None:
@@ -61,11 +58,14 @@ class PriceMonitor:
                     (alert["direction"] == "above" and current >= alert["price"]) or
                     (alert["direction"] == "below" and current <= alert["price"])
                 )
-
                 if not hit:
                     continue
 
+                if now - alert.get("last_alerted", 0) < ALERT_REPEAT_INTERVAL:
+                    continue
+
                 await self._fire(uid, alert, current)
+                storage.update_last_alerted(uid, alert["id"], now)
 
     async def _fire(self, user_id: str, alert: dict, current: float):
         asset = alert["asset"]
@@ -88,22 +88,15 @@ class PriceMonitor:
             f"{note_line}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🆔 Alert ID #{alert['id']}\n"
-            f"_Manual OFF করলে বন্ধ হবে_"
+            f"_Remove alert to stop repeating._"
         )
 
         try:
-            sent = await self.bot.send_message(
+            await self.bot.send_message(
                 chat_id=int(user_id),
                 text=msg,
                 parse_mode="Markdown"
             )
-
-            # 🔥 SAVE MESSAGE ID (for delete system)
-            storage.save_message_id(user_id, sent.message_id)
-
-            logger.info(
-                f"✅ Alert fired → user:{user_id} asset:{asset} price:{current}"
-            )
-
+            logger.info(f"✅ Alert fired → user:{user_id} asset:{asset} price:{current}")
         except Exception as e:
             logger.error(f"Send failed → {user_id}: {e}")
