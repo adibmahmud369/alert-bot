@@ -1,84 +1,126 @@
+"""
+Storage — সব অ্যালার্ট JSON ফাইলে সেভ করে রাখে
+"""
+
 import json
 import os
 from threading import Lock
 
-FILE = "alerts_data.json"
-lock = Lock()
-data = {}
+STORAGE_FILE = "alerts_data.json"
+_lock = Lock()
+_data: dict = {}
 
 
 def _load():
-    global data
-    if os.path.exists(FILE):
-        with open(FILE, "r") as f:
-            data = json.load(f)
+    global _data
+    if os.path.exists(STORAGE_FILE):
+        with open(STORAGE_FILE, "r", encoding="utf-8") as f:
+            _data = json.load(f)
 
 
 def _save():
-    with open(FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+        json.dump(_data, f, indent=2, ensure_ascii=False)
 
 
-def _user(uid):
-    if uid not in data:
-        data[uid] = {
-            "enabled": True,
-            "alerts": [],
-            "next_id": 1
-        }
-    return data[uid]
+def _get_user(user_id: str) -> dict:
+    if user_id not in _data:
+        _data[user_id] = {"enabled": True, "alerts": [], "next_id": 1, "menu_message_ids": []}
+    return _data[user_id]
 
 
-def add_alert(uid, asset, price, direction, note=""):
-    with lock:
-        u = _user(uid)
-        aid = u["next_id"]
-
-        u["alerts"].append({
-            "id": aid,
+def add_alert(user_id: str, asset: str, price: float, direction: str, note: str = "") -> int:
+    with _lock:
+        user = _get_user(user_id)
+        alert_id = user["next_id"]
+        user["alerts"].append({
+            "id": alert_id,
             "asset": asset,
             "price": price,
             "direction": direction,
             "note": note,
+            "triggered": False,   # একবার hit হলে True — তারপর সবসময় alert আসবে
             "last_alerted": 0
         })
-
-        u["next_id"] += 1
+        user["next_id"] += 1
         _save()
-        return aid
+        return alert_id
 
 
-def remove_alert(uid, aid):
-    with lock:
-        u = _user(uid)
-        u["alerts"] = [a for a in u["alerts"] if a["id"] != aid]
+def mark_triggered(user_id: str, alert_id: int):
+    """প্রথমবার price hit হলে triggered=True সেট করো।"""
+    with _lock:
+        user = _get_user(user_id)
+        for a in user["alerts"]:
+            if a["id"] == alert_id:
+                a["triggered"] = True
+                break
         _save()
 
 
-def get_alerts(uid):
-    return _user(uid)["alerts"]
+def remove_alert(user_id: str, alert_id: int) -> bool:
+    with _lock:
+        user = _get_user(user_id)
+        before = len(user["alerts"])
+        user["alerts"] = [a for a in user["alerts"] if a["id"] != alert_id]
+        changed = len(user["alerts"]) < before
+        if changed:
+            _save()
+        return changed
 
 
-def get_all_users():
-    return list(data.keys())
+def get_alerts(user_id: str) -> list:
+    with _lock:
+        return list(_get_user(user_id)["alerts"])
 
 
-def is_enabled(uid):
-    return _user(uid)["enabled"]
+def get_all_users() -> list:
+    with _lock:
+        return list(_data.keys())
 
 
-def set_enabled(uid, val):
-    _user(uid)["enabled"] = val
-    _save()
+def is_enabled(user_id: str) -> bool:
+    with _lock:
+        return _get_user(user_id).get("enabled", True)
 
 
-def update_last_alerted(uid, aid, t):
-    u = _user(uid)
-    for a in u["alerts"]:
-        if a["id"] == aid:
-            a["last_alerted"] = t
-            break
-    _save()
+def set_enabled(user_id: str, value: bool):
+    with _lock:
+        _get_user(user_id)["enabled"] = value
+        _save()
+
+
+def update_last_alerted(user_id: str, alert_id: int, timestamp: float):
+    with _lock:
+        user = _get_user(user_id)
+        for a in user["alerts"]:
+            if a["id"] == alert_id:
+                a["last_alerted"] = timestamp
+                break
+        _save()
+
+
+# ── Menu message tracking (পুরনো বাটন delete করার জন্য) ──
+
+def save_menu_message(user_id: str, message_id: int):
+    """যে menu/button message পাঠানো হয়েছে তার ID সেভ করো।"""
+    with _lock:
+        user = _get_user(user_id)
+        ids = user.get("menu_message_ids", [])
+        ids.append(message_id)
+        user["menu_message_ids"] = ids[-20:]
+        _save()
+
+
+def pop_menu_messages(user_id: str) -> list:
+    """সব saved message ID নিয়ে নাও এবং list খালি করো।"""
+    with _lock:
+        user = _get_user(user_id)
+        ids = user.get("menu_message_ids", [])
+        user["menu_message_ids"] = []
+        if ids:
+            _save()
+        return ids
 
 
 _load()
