@@ -469,6 +469,10 @@ async def stop_alert_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def register_handlers(app: Application):
     app.add_handler(CommandHandler("start", cmd_start))
 
+    # stop_alert এটা সবার আগে register করতে হবে
+    # যাতে ConversationHandler এর ভেতরেও কাজ করে
+    app.add_handler(CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"), group=0)
+
     add_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_start, pattern="^menu_add$")],
         states={
@@ -480,7 +484,10 @@ def register_handlers(app: Application):
             ENTER_NOTE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_note),
                               CallbackQueryHandler(skip_note, pattern="^note_skip$")],
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
+        fallbacks=[
+            CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$"),
+            CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"),
+        ],
         per_message=False,
     )
 
@@ -490,13 +497,16 @@ def register_handlers(app: Application):
             REMOVE_ID: [CallbackQueryHandler(do_remove, pattern="^rm_"),
                         CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
+        fallbacks=[
+            CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$"),
+            CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"),
+        ],
         per_message=False,
     )
 
-    app.add_handler(add_conv)
-    app.add_handler(remove_conv)
-    app.add_handler(CallbackQueryHandler(_back_menu,   pattern="^back_menu$"))
-    app.add_handler(CallbackQueryHandler(view_alerts,  pattern="^menu_view$"))
-    app.add_handler(CallbackQueryHandler(toggle_bot,   pattern="^menu_toggle$"))
-    app.add_handler(CallbackQueryHandler(show_prices,  pattern="^menu_prices$"))
+    app.add_handler(add_conv, group=1)
+    app.add_handler(remove_conv, group=1)
+    app.add_handler(CallbackQueryHandler(_back_menu,   pattern="^back_menu$"),  group=1)
+    app.add_handler(CallbackQueryHandler(view_alerts,  pattern="^menu_view$"),  group=1)
+    app.add_handler(CallbackQueryHandler(toggle_bot,   pattern="^menu_toggle$"),group=1)
+    app.add_handler(CallbackQueryHandler(show_prices,  pattern="^menu_prices$"),group=1)
