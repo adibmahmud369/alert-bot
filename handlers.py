@@ -1,8 +1,6 @@
 """
 Handlers — সব বাটন, কথোপকথন, কমান্ড।
-- Note feature সহ
-- Alert off করলে পুরনো সব বাটন message auto-delete
-- Menu message tracking
+Clean version — group system নেই, সব সঠিকভাবে registered।
 """
 
 import logging
@@ -36,11 +34,11 @@ def _menu_kb(user_id: str) -> InlineKeyboardMarkup:
     enabled = storage.is_enabled(user_id)
     toggle = "🔴 Bot বন্ধ করো" if enabled else "🟢 Bot চালু করো"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Alert যোগ করো",  callback_data="menu_add")],
-        [InlineKeyboardButton("🗑 Alert মুছে ফেলো", callback_data="menu_remove")],
-        [InlineKeyboardButton("📋 সব Alert দেখো",   callback_data="menu_view")],
-        [InlineKeyboardButton("💰 Live Prices",      callback_data="menu_prices")],
-        [InlineKeyboardButton(toggle,                callback_data="menu_toggle")],
+        [InlineKeyboardButton("➕ Alert যোগ করো",   callback_data="menu_add")],
+        [InlineKeyboardButton("🗑 Alert মুছে ফেলো",  callback_data="menu_remove")],
+        [InlineKeyboardButton("📋 সব Alert দেখো",    callback_data="menu_view")],
+        [InlineKeyboardButton("💰 Live Prices",       callback_data="menu_prices")],
+        [InlineKeyboardButton(toggle,                 callback_data="menu_toggle")],
     ])
 
 
@@ -49,27 +47,42 @@ def _status(user_id: str) -> str:
 
 
 async def _delete_old_menus(bot, user_id: str):
-    """পুরনো সব বাটন/menu message delete করো।"""
     ids = storage.pop_menu_messages(user_id)
     for mid in ids:
         try:
             await bot.delete_message(chat_id=int(user_id), message_id=mid)
         except Exception:
-            pass  # already deleted বা পুরনো — ignore
+            pass
+
+
+async def _send_main_menu(bot, user_id: str):
+    """Fresh main menu পাঠাও।"""
+    count = len(storage.get_alerts(user_id))
+    text = (
+        f"🤖 *Aler Bot — Main Menu*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 Status: {_status(user_id)}\n"
+        f"📌 Active Alerts: *{count}টি*\n\n"
+        f"নিচের বাটন থেকে কাজ করো:"
+    )
+    sent = await bot.send_message(
+        int(user_id), text,
+        parse_mode="Markdown",
+        reply_markup=_menu_kb(user_id)
+    )
+    storage.save_menu_message(user_id, sent.message_id)
 
 
 # ══════════════════════════════════════════════
-# MAIN MENU
+# /start COMMAND
 # ══════════════════════════════════════════════
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     name = update.effective_user.first_name or "Trader"
-    count = len(storage.get_alerts(uid))
-
-    # পুরনো সব বাটন মুছে দাও
     await _delete_old_menus(ctx.bot, uid)
 
+    count = len(storage.get_alerts(uid))
     text = (
         f"👋 স্বাগতম, *{name}*!\n\n"
         f"🤖 *Aler Bot (Adib)*\n"
@@ -85,8 +98,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     storage.save_menu_message(uid, sent.message_id)
 
 
-async def _show_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE, edit: bool = True):
-    """Menu দেখাও — edit=True মানে বর্তমান message edit করো।"""
+# ══════════════════════════════════════════════
+# BACK TO MENU
+# ══════════════════════════════════════════════
+
+async def _back_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
     uid = str(update.effective_user.id)
     count = len(storage.get_alerts(uid))
     text = (
@@ -96,30 +114,41 @@ async def _show_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE, edit: 
         f"📌 Active Alerts: *{count}টি*\n\n"
         f"নিচের বাটন থেকে কাজ করো:"
     )
-    kb = _menu_kb(uid)
-
-    if edit and update.callback_query:
-        q = update.callback_query
-        try:
-            edited = await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
-            storage.save_menu_message(uid, edited.message_id)
-        except Exception:
-            # edit কাজ না করলে নতুন message পাঠাও
-            sent = await ctx.bot.send_message(int(uid), text, parse_mode="Markdown", reply_markup=kb)
-            storage.save_menu_message(uid, sent.message_id)
-    else:
-        sent = await ctx.bot.send_message(int(uid), text, parse_mode="Markdown", reply_markup=kb)
-        storage.save_menu_message(uid, sent.message_id)
-
-
-async def _back_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await _show_main_menu(update, ctx, edit=True)
+    try:
+        edited = await q.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=_menu_kb(uid)
+        )
+        storage.save_menu_message(uid, edited.message_id)
+    except Exception:
+        await _send_main_menu(ctx.bot, uid)
 
 
 # ══════════════════════════════════════════════
-# TOGGLE ON/OFF  ← এখানে পুরনো বাটন মুছে যাবে
+# STOP ALERT (alert message এর ভেতরের বাটন)
+# ══════════════════════════════════════════════
+
+async def stop_alert_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("✅ Alert বন্ধ করা হচ্ছে...")
+    uid = str(update.effective_user.id)
+    alert_id = int(q.data.replace("stop_alert_", ""))
+
+    storage.remove_alert(uid, alert_id)
+
+    try:
+        await q.edit_message_text(
+            f"✅ *Alert #{alert_id} বন্ধ ও মুছে ফেলা হয়েছে।*",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    await _delete_old_menus(ctx.bot, uid)
+    await _send_main_menu(ctx.bot, uid)
+
+
+# ══════════════════════════════════════════════
+# TOGGLE ON/OFF
 # ══════════════════════════════════════════════
 
 async def toggle_bot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -129,26 +158,20 @@ async def toggle_bot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     storage.set_enabled(uid, not cur)
 
     if not cur:
-        # চালু করা হচ্ছে
         await q.answer("✅ Bot চালু হয়েছে!", show_alert=True)
-        await _show_main_menu(update, ctx, edit=True)
+        await _back_menu(update, ctx)
     else:
-        # বন্ধ করা হচ্ছে → সব পুরনো বাটন delete করো
         await q.answer("⛔ Bot বন্ধ করা হয়েছে।", show_alert=True)
-
-        # আগের সব menu message মুছে দাও
         await _delete_old_menus(ctx.bot, uid)
-
-        # নতুন fresh menu পাঠাও
-        text = (
-            f"⛔ *Bot বন্ধ করা হয়েছে।*\n\n"
-            f"আর কোনো alert আসবে না।\n"
-            f"চালু করতে নিচের বাটনে ক্লিক করো:"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🟢 Bot চালু করো", callback_data="menu_toggle")
+        ]])
+        sent = await ctx.bot.send_message(
+            int(uid),
+            "⛔ *Bot বন্ধ করা হয়েছে।*\n\nচালু করতে নিচের বাটনে ক্লিক করো:",
+            parse_mode="Markdown",
+            reply_markup=kb
         )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Bot চালু করো", callback_data="menu_toggle")]
-        ])
-        sent = await ctx.bot.send_message(int(uid), text, parse_mode="Markdown", reply_markup=kb)
         storage.save_menu_message(uid, sent.message_id)
 
 
@@ -169,7 +192,7 @@ async def view_alerts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for a in alerts:
             unit = "B$" if a["asset"] == "TOTAL3" else ("%" if a["asset"] == "USDT.D" else "$")
             arrow = "🔺" if a["direction"] == "above" else "🔻"
-            trig = " 🔔" if a.get("triggered") else " ⏳"
+            trig = "🔔" if a.get("triggered") else "⏳"
             note_text = f"\n    📝 _{a['note']}_" if a.get("note", "").strip() else ""
             lines.append(
                 f"{arrow} *#{a['id']}*{trig} | `{a['asset']}` → `{a['price']:,.4f}` {unit} ({a['direction'].upper()})"
@@ -180,7 +203,9 @@ async def view_alerts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     kb = [[InlineKeyboardButton("⬅️ Back", callback_data="back_menu")]]
     try:
-        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb)
+        )
     except Exception:
         pass
 
@@ -192,27 +217,27 @@ async def view_alerts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_prices(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer("প্রাইস লোড হচ্ছে...")
-
     lines = ["💰 *Live Prices*\n━━━━━━━━━━━━━━"]
     for asset in ASSETS:
         p = price_fetcher.get_price(asset)
         unit = "B$" if asset == "TOTAL3" else ("%" if asset == "USDT.D" else "$")
         val = f"`{p:,.4f}` {unit}" if p is not None else "⚠️ পাওয়া যাচ্ছে না"
         lines.append(f"• *{asset}*: {val}")
-
     lines.append("\n_প্রতি ৫ সেকেন্ডে auto-check চলছে_")
     kb = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="menu_prices")],
         [InlineKeyboardButton("⬅️ Back",    callback_data="back_menu")],
     ]
     try:
-        await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb)
+        )
     except Exception:
         pass
 
 
 # ══════════════════════════════════════════════
-# ADD ALERT — 4 ধাপ
+# ADD ALERT — ConversationHandler (4 ধাপ)
 # ══════════════════════════════════════════════
 
 async def add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -244,7 +269,7 @@ async def choose_asset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ বাতিল", callback_data="cancel_conv")],
     ]
     await q.edit_message_text(
-        f"📌 *ধাপ ২/৪ — Alert কখন আসবে?*\n\nAsset: *{asset}*\n\nকোন direction এ alert দেব?",
+        f"📌 *ধাপ ২/৪ — কখন Alert আসবে?*\n\nAsset: *{asset}*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
     )
@@ -257,12 +282,13 @@ async def choose_direction(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     direction = q.data.replace("dir_", "")
     ctx.user_data["direction"] = direction
     asset = ctx.user_data["asset"]
-    unit = "Billion Dollar (B$)" if asset == "TOTAL3" else ("Percent (%)" if asset == "USDT.D" else "USDT ($)")
+    unit = "Billion ($B)" if asset == "TOTAL3" else ("Percent (%)" if asset == "USDT.D" else "USDT ($)")
     arrow = "🔺 উপরে" if direction == "above" else "🔻 নিচে"
     await q.edit_message_text(
         f"📌 *ধাপ ৩/৪ — Target Price লেখো:*\n\n"
-        f"Asset: *{asset}* | Direction: *{arrow}*\nUnit: `{unit}`\n\n"
-        f"✏️ *price টাইপ করে পাঠাও:*\n_(উদাহরণ: 3500 বা 3500.50)_",
+        f"Asset: *{asset}* | Direction: *{arrow}*\n"
+        f"Unit: `{unit}`\n\n"
+        f"✏️ *Price টাইপ করে পাঠাও:*\n_(উদাহরণ: 150 বা 150.50)_",
         parse_mode="Markdown"
     )
     return ENTER_PRICE
@@ -274,20 +300,19 @@ async def enter_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         price = float(text)
     except ValueError:
         await update.message.reply_text(
-            "❌ ভুল! শুধু সংখ্যা লেখো। যেমন: `3500` বা `3500.50`",
+            "❌ ভুল! শুধু সংখ্যা লেখো। যেমন: `150` বা `150.50`",
             parse_mode="Markdown"
         )
         return ENTER_PRICE
 
     ctx.user_data["price"] = price
     asset = ctx.user_data["asset"]
-
     kb = [[InlineKeyboardButton("⏭ Note ছাড়াই Save", callback_data="note_skip")]]
     sent = await update.message.reply_text(
-        f"📌 *ধাপ ৪/৪ — Note যোগ করো (ঐচ্ছিক):*\n\n"
+        f"📌 *ধাপ ৪/৪ — Note লেখো (ঐচ্ছিক):*\n\n"
         f"Asset: *{asset}* → `{price:,.4f}`\n\n"
-        f"📝 Alert আসলে কোনো বার্তা দেখাতে চাও?\n"
-        f"_(যেমন: \"BTC সেল জোন\", \"ETH Buy করো\")_\n\n"
+        f"📝 Alert এ কী দেখাবে?\n"
+        f"_(যেমন: TP Hit, SL Hit, Entry)_\n\n"
         f"✏️ *Note টাইপ করো অথবা নিচের বাটনে ক্লিক করো:*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
@@ -309,17 +334,15 @@ async def skip_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     asset = ctx.user_data["asset"]
     price = ctx.user_data["price"]
     direction = ctx.user_data["direction"]
-
     alert_id = storage.add_alert(uid, asset, price, direction, note="")
     unit = "B$" if asset == "TOTAL3" else ("%" if asset == "USDT.D" else "$")
     arrow = "🔺" if direction == "above" else "🔻"
-
     try:
         await q.edit_message_text(
             f"✅ *Alert তৈরি হয়েছে!*\n\n"
             f"🆔 Alert ID: *#{alert_id}*\n"
             f"{arrow} *{asset}* → `{price:,.4f}` {unit} ({direction.upper()})\n\n"
-            f"প্রাইস এই লেভেলে পৌঁছালে জানাব — তারপর বন্ধ না করা পর্যন্ত বারবার আসবে!",
+            f"প্রাইস hit করলে জানাব!",
             parse_mode="Markdown",
             reply_markup=_menu_kb(uid)
         )
@@ -334,18 +357,16 @@ async def _finish_add_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE, note
     asset = ctx.user_data["asset"]
     price = ctx.user_data["price"]
     direction = ctx.user_data["direction"]
-
     alert_id = storage.add_alert(uid, asset, price, direction, note=note)
     unit = "B$" if asset == "TOTAL3" else ("%" if asset == "USDT.D" else "$")
     arrow = "🔺" if direction == "above" else "🔻"
     note_line = f"\n📝 Note: _{note}_" if note else ""
-
     sent = await update.message.reply_text(
         f"✅ *Alert তৈরি হয়েছে!*\n\n"
         f"🆔 Alert ID: *#{alert_id}*\n"
         f"{arrow} *{asset}* → `{price:,.4f}` {unit} ({direction.upper()})"
         f"{note_line}\n\n"
-        f"প্রাইস এই লেভেলে পৌঁছালে জানাব — তারপর বন্ধ না করা পর্যন্ত বারবার আসবে!",
+        f"প্রাইস hit করলে জানাব!",
         parse_mode="Markdown",
         reply_markup=_menu_kb(uid)
     )
@@ -377,13 +398,13 @@ async def remove_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         unit = "B$" if a["asset"] == "TOTAL3" else ("%" if a["asset"] == "USDT.D" else "$")
         arrow = "🔺" if a["direction"] == "above" else "🔻"
         trig = "🔔" if a.get("triggered") else "⏳"
-        note_preview = f" | {a['note'][:12]}…" if a.get("note", "").strip() else ""
-        label = f"{trig} #{a['id']} {arrow} {a['asset']} {a['price']:,.2f}{unit}{note_preview}"
+        note_p = f" | {a['note'][:12]}…" if a.get("note", "").strip() else ""
+        label = f"{trig} #{a['id']} {arrow} {a['asset']} {a['price']:,.2f}{unit}{note_p}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"rm_{a['id']}")])
 
     buttons.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel_conv")])
     await q.edit_message_text(
-        "🗑 *কোন Alert মুছবে? বেছে নাও:*\n\n_🔔 = চলছে · ⏳ = এখনো hit হয়নি_",
+        "🗑 *কোন Alert মুছবে? বেছে নাও:*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -398,7 +419,9 @@ async def do_remove(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     removed = storage.remove_alert(uid, alert_id)
     msg = f"✅ Alert *#{alert_id}* মুছে ফেলা হয়েছে।" if removed else f"⚠️ Alert *#{alert_id}* পাওয়া যায়নি।"
     try:
-        await q.edit_message_text(msg, parse_mode="Markdown", reply_markup=_menu_kb(uid))
+        await q.edit_message_text(
+            msg, parse_mode="Markdown", reply_markup=_menu_kb(uid)
+        )
     except Exception:
         pass
     return ConversationHandler.END
@@ -416,97 +439,63 @@ async def cancel_conv(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-
 # ══════════════════════════════════════════════
-# STOP ALERT (from inside alert message)
-# ══════════════════════════════════════════════
-
-async def stop_alert_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Alert message এর ভেতরের Stop বাটন চাপলে:
-    1. Alert delete করো
-    2. Alert message টা edit করো (বাটন সরিয়ে ✅ দেখাও)
-    3. পুরনো সব menu message মুছো
-    4. Fresh main menu পাঠাও
-    """
-    q = update.callback_query
-    await q.answer("✅ Alert বন্ধ করা হচ্ছে...")
-    uid = str(update.effective_user.id)
-    alert_id = int(q.data.replace("stop_alert_", ""))
-
-    # Alert remove করো
-    storage.remove_alert(uid, alert_id)
-
-    # Alert message টা edit করো — বাটন সরিয়ে confirmation দেখাও
-    try:
-        await q.edit_message_text(
-            f"✅ Alert #{alert_id} বন্ধ ও মুছে ফেলা হয়েছে।",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        pass
-
-    # পুরনো সব menu message মুছো
-    await _delete_old_menus(ctx.bot, uid)
-
-    # Fresh main menu পাঠাও
-    count = len(storage.get_alerts(uid))
-    text = (
-        f"🤖 *Aler Bot — Main Menu*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔔 Status: {_status(uid)}\n"
-        f"📌 Active Alerts: *{count}টি*\n\n"
-        f"নিচের বাটন থেকে কাজ করো:"
-    )
-    sent = await ctx.bot.send_message(
-        int(uid), text, parse_mode="Markdown", reply_markup=_menu_kb(uid)
-    )
-    storage.save_menu_message(uid, sent.message_id)
-
-# ══════════════════════════════════════════════
-# REGISTER
+# REGISTER — সব handler এখানে
 # ══════════════════════════════════════════════
 
 def register_handlers(app: Application):
-    app.add_handler(CommandHandler("start", cmd_start))
-
-    # stop_alert এটা সবার আগে register করতে হবে
-    # যাতে ConversationHandler এর ভেতরেও কাজ করে
-    app.add_handler(CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"), group=0)
-
+    # ── Conversation: Alert যোগ করো ──
     add_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_start, pattern="^menu_add$")],
         states={
-            CHOOSE_ASSET:    [CallbackQueryHandler(choose_asset, pattern="^asset_"),
-                              CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
-            CHOOSE_DIRECTION:[CallbackQueryHandler(choose_direction, pattern="^dir_"),
-                              CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
-            ENTER_PRICE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_price)],
-            ENTER_NOTE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_note),
-                              CallbackQueryHandler(skip_note, pattern="^note_skip$")],
+            CHOOSE_ASSET: [
+                CallbackQueryHandler(choose_asset, pattern="^asset_"),
+                CallbackQueryHandler(cancel_conv,  pattern="^cancel_conv$"),
+            ],
+            CHOOSE_DIRECTION: [
+                CallbackQueryHandler(choose_direction, pattern="^dir_"),
+                CallbackQueryHandler(cancel_conv,      pattern="^cancel_conv$"),
+            ],
+            ENTER_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_price),
+            ],
+            ENTER_NOTE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_note),
+                CallbackQueryHandler(skip_note,    pattern="^note_skip$"),
+                CallbackQueryHandler(cancel_conv,  pattern="^cancel_conv$"),
+            ],
         },
         fallbacks=[
-            CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$"),
-            CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"),
+            CallbackQueryHandler(cancel_conv,    pattern="^cancel_conv$"),
+            CallbackQueryHandler(stop_alert_cb,  pattern="^stop_alert_"),
         ],
+        allow_reentry=True,
         per_message=False,
     )
 
+    # ── Conversation: Alert মুছো ──
     remove_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(remove_start, pattern="^menu_remove$")],
         states={
-            REMOVE_ID: [CallbackQueryHandler(do_remove, pattern="^rm_"),
-                        CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$")],
+            REMOVE_ID: [
+                CallbackQueryHandler(do_remove,   pattern="^rm_"),
+                CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$"),
+            ],
         },
         fallbacks=[
-            CallbackQueryHandler(cancel_conv, pattern="^cancel_conv$"),
+            CallbackQueryHandler(cancel_conv,   pattern="^cancel_conv$"),
             CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"),
         ],
+        allow_reentry=True,
         per_message=False,
     )
 
-    app.add_handler(add_conv, group=1)
-    app.add_handler(remove_conv, group=1)
-    app.add_handler(CallbackQueryHandler(_back_menu,   pattern="^back_menu$"),  group=1)
-    app.add_handler(CallbackQueryHandler(view_alerts,  pattern="^menu_view$"),  group=1)
-    app.add_handler(CallbackQueryHandler(toggle_bot,   pattern="^menu_toggle$"),group=1)
-    app.add_handler(CallbackQueryHandler(show_prices,  pattern="^menu_prices$"),group=1)
+    # ── সব handler register ──
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(add_conv)
+    app.add_handler(remove_conv)
+    app.add_handler(CallbackQueryHandler(stop_alert_cb, pattern="^stop_alert_"))
+    app.add_handler(CallbackQueryHandler(_back_menu,    pattern="^back_menu$"))
+    app.add_handler(CallbackQueryHandler(view_alerts,   pattern="^menu_view$"))
+    app.add_handler(CallbackQueryHandler(toggle_bot,    pattern="^menu_toggle$"))
+    app.add_handler(CallbackQueryHandler(show_prices,   pattern="^menu_prices$"))
