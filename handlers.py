@@ -416,6 +416,52 @@ async def cancel_conv(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+
+# ══════════════════════════════════════════════
+# STOP ALERT (from inside alert message)
+# ══════════════════════════════════════════════
+
+async def stop_alert_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Alert message এর ভেতরের Stop বাটন চাপলে:
+    1. Alert delete করো
+    2. Alert message টা edit করো (বাটন সরিয়ে ✅ দেখাও)
+    3. পুরনো সব menu message মুছো
+    4. Fresh main menu পাঠাও
+    """
+    q = update.callback_query
+    await q.answer("✅ Alert বন্ধ করা হচ্ছে...")
+    uid = str(update.effective_user.id)
+    alert_id = int(q.data.replace("stop_alert_", ""))
+
+    # Alert remove করো
+    storage.remove_alert(uid, alert_id)
+
+    # Alert message টা edit করো — বাটন সরিয়ে confirmation দেখাও
+    try:
+        await q.edit_message_text(
+            f"✅ Alert #{alert_id} বন্ধ ও মুছে ফেলা হয়েছে।",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    # পুরনো সব menu message মুছো
+    await _delete_old_menus(ctx.bot, uid)
+
+    # Fresh main menu পাঠাও
+    count = len(storage.get_alerts(uid))
+    text = (
+        f"🤖 *Aler Bot — Main Menu*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 Status: {_status(uid)}\n"
+        f"📌 Active Alerts: *{count}টি*\n\n"
+        f"নিচের বাটন থেকে কাজ করো:"
+    )
+    sent = await ctx.bot.send_message(
+        int(uid), text, parse_mode="Markdown", reply_markup=_menu_kb(uid)
+    )
+    storage.save_menu_message(uid, sent.message_id)
+
 # ══════════════════════════════════════════════
 # REGISTER
 # ══════════════════════════════════════════════

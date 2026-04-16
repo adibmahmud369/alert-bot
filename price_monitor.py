@@ -1,17 +1,14 @@
 """
 Price Monitor — প্রতি CHECK_INTERVAL সেকেন্ডে সব অ্যালার্ট চেক করে।
-
-লজিক:
-- triggered=False → price hit হওয়া পর্যন্ত অপেক্ষা করো
-- triggered=True  → price যেখানেই থাকুক, প্রতি ALERT_REPEAT_INTERVAL সেকেন্ডে alert দাও
-                     যতক্ষণ না user Remove করে
+Alert message এ সরাসরি "Stop" বাটন থাকবে।
+Simple format: SOL = TP Hit
 """
 
 import asyncio
 import logging
 import time
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from config import CHECK_INTERVAL, ALERT_REPEAT_INTERVAL
 import storage
 import price_fetcher
@@ -60,7 +57,6 @@ class PriceMonitor:
 
                 triggered = alert.get("triggered", False)
 
-                # triggered=False হলে → প্রথমবার price hit হওয়া পর্যন্ত দেখো
                 if not triggered:
                     hit = (
                         (alert["direction"] == "above" and current >= alert["price"]) or
@@ -68,10 +64,8 @@ class PriceMonitor:
                     )
                     if not hit:
                         continue
-                    # প্রথমবার hit! triggered=True করে দাও
                     storage.mark_triggered(uid, alert["id"])
 
-                # triggered=True হলে → repeat interval চেক করো
                 if now - alert.get("last_alerted", 0) < ALERT_REPEAT_INTERVAL:
                     continue
 
@@ -80,40 +74,30 @@ class PriceMonitor:
 
     async def _fire(self, user_id: str, alert: dict, current: float):
         asset = alert["asset"]
-        direction = alert["direction"]
-        target = alert["price"]
         note = alert.get("note", "").strip()
-        triggered_before = alert.get("triggered", False)
+        alert_id = alert["id"]
 
-        unit = "B$" if asset == "TOTAL3" else ("%" if asset == "USDT.D" else "$")
-        arrow = "🔺" if direction == "above" else "🔻"
-        note_line = f"\n📝 *Note:* {note}" if note else ""
+        # ── Simple message format ──
+        # note থাকলে → "SOL = TP Hit"
+        # note না থাকলে → "SOL = Alert #1"
+        label = note if note else f"Alert #{alert_id}"
+        msg = f"🔔 *{asset} = {label}*"
 
-        # প্রথমবার vs বারবার — আলাদা header
-        if not triggered_before:
-            header = f"{arrow} *ALERT TRIGGERED* {arrow}"
-        else:
-            header = f"🔔 *ALERT REPEATING* 🔔"
-
-        msg = (
-            f"{header}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📌 Asset:   *{asset}*\n"
-            f"🎯 Target:  `{target:,.4f}` {unit}\n"
-            f"💰 Current: `{current:,.4f}` {unit}\n"
-            f"📊 Type:    *{direction.upper()}*"
-            f"{note_line}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 Alert ID #{alert['id']}\n"
-            f"_বন্ধ করতে Remove Alert ব্যবহার করো।_"
-        )
+        # প্রতিটা alert message এর মধ্যে Stop বাটন
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                f"🔕 Stop & Delete This Alert",
+                callback_data=f"stop_alert_{alert_id}"
+            )
+        ]])
 
         try:
             await self.bot.send_message(
                 chat_id=int(user_id),
                 text=msg,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=kb
             )
-            logger.info(f"✅ Alert fired → user:{user_id} asset:{asset} price:{current}")
+            logger.info(f"✅ Alert fired → user:{user_id} asset:{asset}")
         except Exception as e:
             logger.error(f"Send failed → {user_id}: {e}")
